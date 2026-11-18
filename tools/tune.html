@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>刀點微調</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--line:#ddd;--dim:#666;--t0:#2b6cb0;--t1:#c05621;--t2:#2f855a;--t3:#805ad5;--cut:rgba(200,40,40,.16);--edge:#d12;--panel:#f6f6f6;--ok:#2a7}
+@media (prefers-color-scheme:dark){:root{--bg:#16181c;--fg:#e6e6e6;--line:#333;--dim:#999;--t0:#63a4e8;--t1:#f0a060;--t2:#68d391;--t3:#b794f4;--cut:rgba(255,80,80,.2);--edge:#f55;--panel:#1e2126;--ok:#4c9}}
+body{background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,"PingFang TC",sans-serif;max-width:1000px;margin:0 auto;padding:0 16px 80px}
+.bar{position:sticky;top:0;background:var(--bg);padding:10px 0;border-bottom:1px solid var(--line);z-index:5;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.bar input{font-size:15px;padding:4px 8px;flex:1;min-width:160px}
+button{font-size:14px;cursor:pointer;padding:3px 9px}
+.cut{border-bottom:1px solid var(--line);padding:8px 0}
+.head{display:flex;gap:10px;align-items:baseline;cursor:pointer}
+.head b{min-width:44px}.head .t{min-width:52px;color:var(--dim);font-variant-numeric:tabular-nums}
+.head .note{flex:1}.state{font-size:13px;color:var(--ok);white-space:nowrap}.state.dirty{color:var(--edge)}
+.body{padding:8px 0 4px}
+.lab{font-size:13px;color:var(--dim);margin:6px 0 2px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.lab strong{color:var(--fg);font-variant-numeric:tabular-nums}
+canvas{width:100%;height:150px;background:var(--panel);display:block;touch-action:none;cursor:ew-resize;border-radius:4px}
+.ctl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+.ctl input[type=number]{width:64px;font-size:14px}
+.legend span{display:inline-block;width:10px;height:10px;border-radius:2px;margin:0 4px 0 10px}
+small{color:var(--dim)}
+#msg{font-size:13px;color:var(--dim)}
+</style>
+<div class="bar">
+  <strong>刀點微調</strong>
+  <input id="filter" placeholder="篩選：輸入備註裡的字，例如「填充詞」「3-2」">
+  <button id="render">重新輸出試聽版</button>
+  <span id="msg"></span>
+</div>
+<p><small>點一列展開。上面的波形是接點<strong>之前</strong>，拖紅線決定在哪裡切出去；下面是接點<strong>之後</strong>，拖紅線決定從哪裡接回來。紅色區域是剪掉的部分。
+<span class="legend" id="legend"></span>。波形把小聲的部分放大了，方便看尾音。
+「試聽」是照現在的位置即時算的；「儲存」寫回 edl.json；整份試聽版要按「重新輸出」才會更新（約一分鐘）。</small></p>
+<div id="list"></div>
+<script>
+const SR = 48000, PRE = 3.5;
+let META = null, ctx = null, playing = null;
+const $ = (tag, attrs = {}, ...kids) => { const e = Object.assign(document.createElement(tag), attrs); kids.forEach(k => e.append(k)); return e; };
+const mmss = t => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`;
+const msg = s => document.getElementById('msg').textContent = s;
+async function api(path, body) {
+  const r = await fetch(path, body ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)} : {cache: 'no-store'});
+  const j = await r.json();
+  if (j.error) throw new Error(j.error);
+  return j;
+}
+function audio() { return ctx || (ctx = new AudioContext({sampleRate: SR})); }
+function stopPlay() { if (playing) { try { playing.src.stop(); } catch (e) {} cancelAnimationFrame(playing.raf); playing.done(); playing = null; } }
+
+// 一個波形面板：顯示原始錄音 [start, end]，一條可拖的線 pos；side='A' 剪掉線的右邊，'B' 剪掉線的左邊
+class Panel {
+  constructor(side, start, end, pos, onChange) {
+    Object.assign(this, {side, start, end, pos, onChange, ch: null, words: [], head: null});
+    this.canvas = $('canvas');
+    const drag = ev => { const r = this.canvas.getBoundingClientRect(); this.onChange(this.start + (ev.clientX - r.left) / r.width * (this.end - this.start)); };
+    this.canvas.addEventListener('pointerdown', ev => { this.canvas.setPointerCapture(ev.pointerId); this.down = true; drag(ev); });
+    this.canvas.addEventListener('pointermove', ev => { if (this.down) drag(ev); });
+    this.canvas.addEventListener('pointerup', () => this.down = false);
+    this.canvas.addEventListener('pointercancel', () => this.down = false);
+  }
+  async load() {
+    const [buf, words] = await Promise.all([
+      fetch(`/api/clip?start=${this.start}&end=${this.end}`, {cache: 'no-store'}).then(r => r.arrayBuffer()).then(b => audio().decodeAudioData(b)),
+      api(`/api/words?start=${this.start}&end=${this.end}`)]);
+    this.ch = META.tracks.map((t, k) => buf.getChannelData(k).map(v => v * t.gain));   // 每人一軌，先補增益
+    this.mix = this.ch[0].slice(); for (const c of this.ch.slice(1)) for (let i = 0; i < c.length; i++) this.mix[i] += c[i];
+    this.end = this.start + this.mix.length / SR;
+    this.words = words;
+    this.draw();
+  }
+  x(t) { return (t - this.start) / (this.end - this.start) * this.canvas.width; }
+  slice(t0, t1) { return this.mix.slice(Math.max(0, Math.round((t0 - this.start) * SR)), Math.max(0, Math.round((t1 - this.start) * SR))); }
+  draw() {
+    const c = this.canvas, dpr = window.devicePixelRatio || 1, css = getComputedStyle(document.documentElement);
+    c.width = c.clientWidth * dpr; c.height = c.clientHeight * dpr;
+    const g = c.getContext('2d'), W = c.width, H = c.height, v = n => css.getPropertyValue(n).trim();
+    g.clearRect(0, 0, W, H);
+    if (!this.ch) { g.fillStyle = v('--dim'); g.font = `${13 * dpr}px sans-serif`; g.fillText('載入中…', 10 * dpr, 24 * dpr); return; }
+    const lx = this.x(this.pos);
+    g.fillStyle = v('--cut');
+    this.side === 'A' ? g.fillRect(lx, 0, W - lx, H) : g.fillRect(0, 0, lx, H);
+    const n = this.ch.length, color = k => v('--t' + k % 4), top = k => H * 0.94 * k / n;   // 第 k 軌那一列的上緣
+    const row = (data, mid, color) => {
+      g.fillStyle = color;
+      const per = data.length / W, amp = H * 0.4 / n;
+      for (let px = 0; px < W; px++) {
+        let lo = 0, hi = 0;
+        for (let i = Math.floor(px * per), e = Math.min(data.length, Math.floor((px + 1) * per) + 1); i < e; i++) { const s = data[i]; if (s < lo) lo = s; if (s > hi) hi = s; }
+        const a = Math.sqrt(hi) * amp, b = Math.sqrt(-lo) * amp;   // 開根號，把小聲的尾音放大
+        g.fillRect(px, mid - a, 1, Math.max(1, a + b));
+      }
+    };
+    this.ch.forEach((d, k) => row(d, top(k) + H * 0.94 / n * 0.62, color(k)));
+    g.font = `${12 * dpr}px -apple-system,"PingFang TC",sans-serif`;
+    const used = {};  // 字擠在一起時跳過，不讓標籤互相蓋住
+    for (const w of this.words) {
+      const x = this.x(w.t);
+      if (x < (used[w.who] || 0)) continue;
+      const k = Math.max(0, META.tracks.findIndex(t => t.speaker === w.who));
+      g.fillStyle = color(k);
+      g.fillText(w.w, x, top(k) + 13 * dpr);
+      used[w.who] = x + g.measureText(w.w).width + 3 * dpr;
+    }
+    g.fillStyle = v('--dim'); g.font = `${10 * dpr}px sans-serif`;
+    for (let t = Math.ceil(this.start); t < this.end; t++) { g.fillRect(this.x(t), H - 5 * dpr, 1, 5 * dpr); g.fillText(mmss(t).replace('.0', ''), this.x(t) + 2 * dpr, H - 2 * dpr); }
+    g.fillStyle = v('--edge'); g.fillRect(lx - dpr, 0, 2 * dpr, H);
+    if (this.head !== null) { g.fillStyle = v('--fg'); g.fillRect(this.x(this.head), 0, dpr, H); }
+  }
+}
+
+function buildCut(cut, n) {
+  const saved = {a: cut.a, b: cut.b, fade: cut.fade}, cur = {...saved};
+  const state = $('span', {className: 'state'});
+  const body = $('div', {className: 'body', hidden: true});
+  const head = $('div', {className: 'head'}, $('b', {textContent: `C${n}`}), $('span', {className: 't', textContent: mmss(cut.out)}),
+    $('span', {className: 'note', textContent: cut.note}), state);
+  const wrap = $('div', {className: 'cut'}, head, body);
+  wrap.dataset.note = cut.note;
+  let A, B, built = false, note = '';
+  const labA = $('strong'), labB = $('strong'), info = $('small');
+  const fadeIn = $('input', {type: 'number', min: 2, max: 500, step: 5, value: Math.round(cur.fade * 1000)});
+  const refresh = () => {
+    const dirty = ['a', 'b', 'fade'].some(k => Math.abs(cur[k] - saved[k]) > 1e-4);
+    state.textContent = dirty ? '有改動，還沒儲存' : note;
+    state.classList.toggle('dirty', dirty);
+    labA.textContent = `${cur.a.toFixed(3)} 秒（${mmss(cur.a)}）${fmtDelta(cur.a - saved.a)}`;
+    labB.textContent = `${cur.b.toFixed(3)} 秒（${mmss(cur.b)}）${fmtDelta(cur.b - saved.b)}`;
+    info.textContent = cut.kind === 'remove' ? `剪掉 ${(cur.b - cur.a).toFixed(2)} 秒` : '區塊之間的接點';
+    if (A) { A.pos = cur.a; A.draw(); B.pos = cur.b; B.draw(); }
+  };
+  const fmtDelta = d => Math.abs(d) < 5e-4 ? '' : `　${d > 0 ? '+' : '−'}${Math.round(Math.abs(d) * 1000)} 毫秒`;
+  const setA = t => { cur.a = Math.min(Math.max(t, Math.max(A.start + 0.3, cut.lo + 0.05)), Math.min(A.end - 0.02, cut.kind === 'remove' ? cur.b - 0.02 : A.end)); refresh(); };
+  const setB = t => { cur.b = Math.max(Math.min(t, Math.min(B.end - 0.3, cut.hi - 0.05)), Math.max(B.start + 0.02, cut.kind === 'remove' ? cur.a + 0.02 : B.start)); refresh(); };
+  const nudges = set => [-50, -10, 10, 50].map(ms => $('button', {textContent: (ms > 0 ? '+' : '−') + Math.abs(ms), title: `${ms} 毫秒`, onclick: () => set(ms / 1000)}));
+
+  function play(mode) {
+    stopPlay();
+    const f = Math.round(cur.fade * SR);
+    let s1 = A.slice(Math.max(A.start, cur.a - PRE), cur.a), s2 = B.slice(cur.b, Math.min(B.end, cur.b + PRE)), out, map;
+    if (mode === 'before') { out = s1; map = t => [A, cur.a - s1.length / SR + t]; }
+    else if (mode === 'after') { out = s2; map = t => [B, cur.b + t]; }
+    else if (mode === 'orig') { out = A.slice(Math.max(A.start, cur.a - PRE), A.end); const st = Math.max(A.start, cur.a - PRE); map = t => [A, st + t]; }
+    else {  // 和 render_preview.render 同一個交叉淡化
+      const n = Math.min(f, s1.length, s2.length);
+      out = new Float32Array(s1.length + s2.length - n);
+      out.set(s1); out.set(s2.subarray(n), s1.length);
+      const ramp = i => Math.sin(i / Math.max(1, n - 1) * Math.PI / 2) ** 2;
+      for (let i = 0; i < n; i++) { const k = s1.length - n + i; out[k] = s1[k] * ramp(n - 1 - i) + s2[i] * ramp(i); }
+      const l1 = s1.length / SR;
+      map = t => t < l1 ? [A, cur.a - l1 + t] : [B, cur.b + n / SR + (t - l1)];
+    }
+    if (!out.length) return;
+    const ac = audio(), buf = ac.createBuffer(1, out.length, SR), src = ac.createBufferSource();
+    buf.copyToChannel(out, 0); src.buffer = buf; src.connect(ac.destination);
+    const t0 = ac.currentTime + 0.03, me = {src, done: () => { A.head = B.head = null; A.draw(); B.draw(); }};
+    const tick = () => { const t = ac.currentTime - t0; if (t >= 0) { const [p, pt] = map(t); A.head = B.head = null; p.head = pt; A.draw(); B.draw(); } me.raf = requestAnimationFrame(tick); };
+    src.onended = () => { if (playing === me) stopPlay(); };
+    playing = me; ac.resume(); src.start(t0); tick();
+  }
+
+  async function open() {
+    body.hidden = !body.hidden;
+    if (built || body.hidden) return;
+    built = true;
+    A = new Panel('A', cut.a - 4, cut.a + 2.5, cur.a, t => setA(t));
+    B = new Panel('B', cut.b - 2.5, cut.b + 4, cur.b, t => setB(t));
+    const save = $('button', {textContent: '儲存', onclick: async () => {
+      try {
+        const r = await api('/api/save', {id: cut.id, ...cur});
+        Object.assign(saved, {a: r.a, b: r.b, fade: r.fade}); Object.assign(cur, saved);
+        note = '已儲存，還沒重新輸出'; refresh();
+      } catch (e) { state.textContent = '儲存失敗：' + e.message; state.classList.add('dirty'); }
+    }});
+    fadeIn.oninput = () => { const v = Number(fadeIn.value); if (v >= 2 && v <= 500) { cur.fade = v / 1000; refresh(); } };
+    body.append(
+      $('div', {className: 'lab'}, '接點之前，切出去的位置：', labA, ...nudges(d => setA(cur.a + d)), $('button', {textContent: '▶ 只聽這段', onclick: () => play('before')})),
+      A.canvas,
+      $('div', {className: 'lab'}, '接點之後，接回來的位置：', labB, ...nudges(d => setB(cur.b + d)), $('button', {textContent: '▶ 只聽這段', onclick: () => play('after')})),
+      B.canvas,
+      $('div', {className: 'ctl'}, $('button', {textContent: '▶ 試聽剪後', onclick: () => play('cut')}), $('button', {textContent: '▶ 原始', onclick: () => play('orig')}),
+        $('button', {textContent: '■', onclick: stopPlay}), '　淡化', fadeIn, '毫秒　', save,
+        $('button', {textContent: '還原', onclick: () => { Object.assign(cur, saved); fadeIn.value = Math.round(cur.fade * 1000); refresh(); }}), info));
+    refresh();
+    try { await Promise.all([A.load(), B.load()]); refresh(); } catch (e) { state.textContent = '載入失敗：' + e.message; state.classList.add('dirty'); }
+  }
+  head.onclick = open;
+  window.addEventListener('resize', () => { if (A && !body.hidden) { A.draw(); B.draw(); } });
+  return wrap;
+}
+
+async function load() {
+  stopPlay();
+  META = await api('/api/cuts');
+  document.title = `刀點微調：${META.episode}`;
+  document.getElementById('legend').innerHTML = META.tracks.map((t, k) => `<span style="background:var(--t${k % 4})"></span>${t.speaker}`).join('');
+  const list = document.getElementById('list');
+  list.replaceChildren(...META.cuts.map((c, i) => buildCut(c, i + 1)));
+  applyFilter();
+  msg(`${META.cuts.length} 刀`);
+}
+function applyFilter() {
+  const q = document.getElementById('filter').value.trim();
+  for (const el of document.querySelectorAll('.cut')) el.hidden = q && !el.dataset.note.includes(q);
+}
+document.getElementById('filter').oninput = applyFilter;
+document.getElementById('render').onclick = async ev => {
+  // 不用 confirm()：app 內建瀏覽器會擋掉對話框，按鈕就變成沒反應
+  const unsaved = document.querySelectorAll('.state.dirty').length;
+  ev.target.disabled = true; msg('重新輸出中，約一分鐘…' + (unsaved ? `（有 ${unsaved} 刀還沒儲存，不會被輸出）` : ''));
+  try { const r = await api('/api/render', {}); await load(); msg('已重新輸出：' + r.log.join('　') + (unsaved ? `　注意：剛才有 ${unsaved} 刀沒儲存，改動已丟掉` : '')); }
+  catch (e) { msg('輸出失敗：' + e.message); }
+  ev.target.disabled = false;
+};
+load().catch(e => msg('載入失敗：' + e.message));
+</script>
+</html>

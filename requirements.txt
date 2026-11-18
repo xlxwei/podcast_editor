@@ -1,0 +1,3 @@
+numpy
+mlx-whisper
+opencc-python-reimplemented

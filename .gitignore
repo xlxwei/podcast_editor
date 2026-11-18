@@ -1,0 +1,4 @@
+# 每一集的錄音和剪輯資料都放在 episodes/，不進這個 repository（各集有自己的 git 紀錄）
+episodes/
+__pycache__/
+.DS_Store

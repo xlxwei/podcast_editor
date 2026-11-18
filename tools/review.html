@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>逐字稿</title>
+<style>
+:root{--bg:#fafaf8;--fg:#1d1d1b;--muted:#77756f;--line:#e4e2dc;--card:#fff;--accent:#c2410c;--hl:#fde68a;
+  --set:#8a8780;--setbg:#efeee9;--usr:#b91c1c;--usrbg:#fee2e2;--ct:#b45309;--ctbg:#fef3c7;--cc:#7e22ce;--ccbg:#f3e8ff;--kept:#15803d;--over:#b91c1c;--ok:#15803d}
+@media (prefers-color-scheme:dark){:root{--bg:#171715;--fg:#ecebe6;--muted:#9a978f;--line:#33322e;--card:#201f1c;--accent:#fb923c;--hl:#713f12;
+  --set:#8f8c84;--setbg:#2a2926;--usr:#fca5a5;--usrbg:#4c1414;--ct:#fbbf24;--ctbg:#3d2c05;--cc:#d8b4fe;--ccbg:#3b1d5a;--kept:#4ade80;--over:#fca5a5;--ok:#4ade80}}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.75 -apple-system,"PingFang TC",sans-serif}
+header{position:sticky;top:0;z-index:3;background:var(--bg);border-bottom:1px solid var(--line);padding:8px 16px}
+header .row{display:flex;gap:14px;align-items:baseline;flex-wrap:wrap;max-width:860px;margin:0 auto}
+header h1{font-size:16px;margin:0}
+#budget{font-variant-numeric:tabular-nums;font-weight:600}
+#budget.over{color:var(--over)}#budget.ok{color:var(--ok)}
+#now{font-size:13px;color:var(--accent);min-height:1.3em;max-width:860px;margin:0 auto}
+.legend{font-size:12px;color:var(--muted)}.legend span{padding:0 4px;border-radius:3px;margin-right:6px}
+main{max-width:860px;margin:0 auto;padding:8px 16px 120px}
+h2{font-size:18px;margin:36px 0 8px;padding-bottom:4px;border-bottom:2px solid var(--fg)}
+.sec{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:12px 0}
+.top{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.id{font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums}.title{font-weight:600}
+.meta{color:var(--muted);font-size:13px;margin-left:auto;font-variant-numeric:tabular-nums}
+.sum{color:var(--muted);font-size:14px;margin:6px 0}
+.btns{display:flex;gap:6px;margin:6px 0}
+button,select{font:inherit;font-size:13px;padding:3px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);cursor:pointer}
+button:hover{border-color:var(--fg)}button:disabled{opacity:.4;cursor:default}
+details summary{cursor:pointer;color:var(--muted);font-size:13px}
+.line{margin:4px 0}
+.ts{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums;user-select:none}
+.sp{font-weight:600;font-size:14px;user-select:none}
+.w{cursor:pointer;border-radius:3px}
+.w.cut{text-decoration:line-through}
+.w.set{color:var(--set);background:var(--setbg)}
+.w.usr{color:var(--usr);background:var(--usrbg)}
+.w.ct{color:var(--ct);background:var(--ctbg)}
+.w.cc{color:var(--cc);background:var(--ccbg)}
+.w.blk{color:var(--set);font-style:italic;cursor:default}
+.w.kept{text-decoration:underline dotted var(--kept);text-underline-offset:4px}
+.w.on{background:var(--hl);color:var(--fg)}
+.w.flash{outline:2px solid var(--accent)}
+#bar{position:absolute;z-index:4;display:none;background:var(--card);border:1px solid var(--fg);border-radius:8px;padding:6px 8px;box-shadow:0 4px 14px rgba(0,0,0,.25);font-size:13px;max-width:420px}
+#bar .note{color:var(--muted);margin-bottom:4px}#bar button{margin-right:4px}
+#bar .del{border-color:var(--usr);color:var(--usr)}#bar .keep{border-color:var(--kept);color:var(--kept)}
+</style></head><body>
+<header><div class="row"><h1 id="h1">逐字稿</h1><span id="budget"></span>
+<label style="font-size:13px">點字播放 <select id="mode"><option value="orig">原始</option><option value="cut">剪後</option></select></label>
+<span class="legend"><span class="w cut set">已定的刪除</span><span class="w cut usr">你圈的</span><span class="w cut ct">建議：技術性</span><span class="w cut cc">建議：內容</span><span class="w kept">你改回留著</span></span></div>
+<div id="now"></div></header>
+<main id="main">載入中…</main>
+<div id="bar"></div>
+<audio id="orig" src="work/原始_mix.mp3" preload="metadata"></audio><audio id="cut"></audio>
+<script>
+const $ = id => document.getElementById(id);
+const orig = $('orig'), cutEl = $('cut'), now = $('now'), bar = $('bar'), main = $('main');
+let D, S, W = [], SECS = [], job = null, raf = 0;
+const fmt = t => { t = Math.max(0, Math.round(t)); const h = Math.floor(t/3600), m = Math.floor(t/60)%60, s = t%60;
+  return (h ? h+':'+String(m).padStart(2,'0') : m) + ':' + String(s).padStart(2,'0'); };
+async function api(path, body) {
+  const r = await fetch(path, body ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)} : {cache: 'no-store'});
+  const j = await r.json(); if (j.error) throw new Error(j.error); return j;
+}
+
+// ---- 播放 ----
+function stop() { orig.pause(); cutEl.pause(); cancelAnimationFrame(raf); job = null; now.textContent = '';
+  document.querySelectorAll('.w.on').forEach(e => e.classList.remove('on')); }
+// [a,b] 這段原始時間在剪後版本裡的片段：[原始起點, 原始終點, 和前一段的淡化]
+function subPieces(a, b) {
+  const out = [];
+  for (const [x, y, f] of S.pieces) { const s = Math.max(x, a), e = Math.min(y, b); if (e - s > 0.02) out.push([s, e, s === x ? f : 0.005]); }
+  return out;
+}
+function playOrig(a, b, label, sec) { stop(); job = {el: orig, end: b, label, sec, src: t => t}; orig.currentTime = a; orig.play(); loop(); }
+function playCut(a, b, label, sec) {
+  const ps = subPieces(a, b); stop();
+  if (!ps.length) { now.textContent = '這段整段剪掉了，沒有剪後可以播'; return; }
+  const starts = []; let t = 0;
+  ps.forEach(([s, e, f], i) => { if (i) t -= f; starts.push(t); t += e - s; });
+  const src = o => { let i = starts.length - 1; while (i > 0 && starts[i] > o) i--; return ps[i][0] + o - starts[i]; };
+  now.textContent = '拼接中…';
+  cutEl.src = '/api/preview?p=' + ps.map(p => p.map(v => +v.toFixed(3)).join('-')).join(',');
+  job = {el: cutEl, end: Infinity, label, sec, src}; cutEl.play().catch(e => { now.textContent = '播放失敗：' + e.message; }); loop();
+}
+function loop() {
+  if (!job) return;
+  const el = job.el, t = el.currentTime;
+  if (t >= job.end || el.ended) return stop();
+  if (!el.paused && el.readyState > 2) {
+    const st = job.src(t); now.textContent = `▶ ${job.label}　原始 ${fmt(st)}`;
+    const sec = job.sec; if (sec) {
+      let hit = null; for (let i = sec.w0; i < sec.w1; i++) if (D.words[i][1] <= st && st < D.words[i][2] + 0.05) { hit = W[i]; break; }
+      const on = document.querySelector('.w.on'); if (on !== hit) { on && on.classList.remove('on'); hit && hit.classList.add('on'); }
+    }
+  }
+  raf = requestAnimationFrame(loop);
+}
+
+// ---- 狀態上色 ----
+function cls(i) {
+  const st = S.status[i]; if (st === -2) return 'w';
+  if (st === -1) return 'w cut blk';
+  const r = S.removes[st]; return 'w cut ' + (r.by === 'user' ? 'usr' : r.by === 'claude' ? (r.kind === 'content' ? 'cc' : 'ct') : 'set');
+}
+function apply(state, flash) {
+  const old = S; S = state;
+  W.forEach((el, i) => {
+    let c = cls(i); const mid = (D.words[i][1] + D.words[i][2]) / 2;
+    if (S.status[i] === -2 && S.keeps.some(([a, b]) => a <= mid && mid < b)) c += ' kept';
+    if (flash && old && (old.status[i] === -2) !== (S.status[i] === -2)) { c += ' flash'; setTimeout(() => el.classList.remove('flash'), 1800); }
+    el.className = c;
+  });
+  const diff = S.total - D.limit, b = $('budget');
+  b.textContent = `剪後 ${fmt(S.total)}／上限 ${fmt(D.limit)}，${diff > 0 ? '超過 ' + fmt(diff) : '還有 ' + fmt(-diff)}`;
+  b.className = diff > 0 ? 'over' : 'ok';
+  for (const s of SECS) {
+    const kept = subPieces(s.a, s.b).reduce((n, [x, y]) => n + y - x, 0);
+    s.meta.textContent = `原始 ${fmt(s.a)}–${fmt(s.b)}（${fmt(s.b - s.a)}）　剪後 ${kept > 0.5 ? fmt(kept) : '整段剪掉'}`;
+  }
+}
+
+// ---- 圈字 ----
+function hideBar() { bar.style.display = 'none'; }
+function showBar(rect, html) {
+  bar.innerHTML = html; bar.style.display = 'block';
+  bar.style.left = Math.max(8, Math.min(rect.left + window.scrollX, window.scrollX + innerWidth - bar.offsetWidth - 8)) + 'px';
+  bar.style.top = (rect.bottom + window.scrollY + 6) + 'px';
+}
+function selectedWords() {
+  const sel = getSelection(); if (!sel.rangeCount || sel.isCollapsed) return null;
+  const r = sel.getRangeAt(0);
+  let first = -1, last = -1;
+  for (let i = 0; i < W.length; i++) {
+    const el = W[i]; if (!r.intersectsNode(el)) { if (first >= 0) break; continue; }
+    const tn = el.firstChild;   // 只碰到字的邊緣不算
+    if (r.endContainer === tn && r.endOffset === 0) continue;
+    if (r.startContainer === tn && r.startOffset === tn.length) continue;
+    if (first < 0) first = i; last = i;
+  }
+  return first < 0 ? null : {first, last, rect: r.getBoundingClientRect()};
+}
+async function act(path, body) {
+  hideBar(); getSelection().removeAllRanges();
+  try { const r = await api(path, body); apply(r.state, true); }
+  catch (e) { now.textContent = '沒有改：' + e.message; }
+}
+document.addEventListener('mouseup', ev => {
+  if (bar.contains(ev.target)) return;
+  setTimeout(() => {
+    const s = selectedWords();
+    if (!s) { if (!ev.target.classList || !ev.target.classList.contains('cut')) hideBar(); return; }
+    const sts = S.status.slice(s.first, s.last + 1), dur = D.words[s.last][2] - D.words[s.first][1];
+    const text = D.words.slice(s.first, s.last + 1).map(w => w[0]).join('');
+    let h = `<div class="note">「${text.length > 24 ? text.slice(0, 22) + '…' : text}」約 ${dur.toFixed(1)} 秒</div>`;
+    if (sts.includes(-2)) h += `<button class="del" id="bDel">刪掉</button>`;
+    if (sts.some(x => x >= 0)) h += `<button class="keep" id="bKeep">留著</button>`;
+    if (!sts.includes(-2) && !sts.some(x => x >= 0)) h += '這段在搬移的接點或頭尾，頁面改不了，請在 session 裡說';
+    showBar(s.rect, h);
+    if ($('bDel')) $('bDel').onclick = () => act('/api/mark', {first: s.first, last: s.last});
+    if ($('bKeep')) $('bKeep').onclick = () => act('/api/keep', {first: s.first, last: s.last});
+  }, 0);
+});
+function clickWord(i, sec) {
+  if (!getSelection().isCollapsed) return;
+  const st = S.status[i], [, a] = D.words[i];
+  if (st >= 0) {
+    const r = S.removes[st];
+    showBar(W[i].getBoundingClientRect(), `<div class="note">${r.note || '（沒有備註）'}<br>原始 ${fmt(r.a)}–${fmt(r.b)}，${(r.b - r.a).toFixed(1)} 秒</div>
+      <button class="keep" id="bAll">整刀留著</button><button id="bPlay">▶ 聽原始</button><span class="note">只留一部分：圈起那幾個字再按留著</span>`);
+    $('bAll').onclick = () => act('/api/keep', {remove: st});
+    $('bPlay').onclick = () => { hideBar(); playOrig(Math.max(sec.a, r.a - 2), Math.min(sec.b, r.b + 2), sec.id + ' 原始', sec); };
+    return;
+  }
+  hideBar();
+  if (st === -2 && $('mode').value === 'cut') playCut(a, sec.b, sec.id + ' 剪後', sec);
+  else playOrig(a, sec.b, sec.id + ' 原始', sec);
+}
+
+// ---- 建頁面 ----
+async function load() {
+  D = await api('/api/review');
+  $('h1').textContent = '逐字稿：' + D.title; document.title = '逐字稿：' + D.title;
+  main.textContent = ''; let wi = 0;
+  for (const ch of D.chapters) {
+    const h = document.createElement('h2'); h.textContent = ch.chapter; main.appendChild(h);
+    for (const s of ch.sections) {
+      const d = document.createElement('section'); d.className = 'sec'; d.id = 's' + s.id;
+      d.innerHTML = `<div class="top"><span class="id">${s.id}</span><span class="title">${s.title}</span><span class="meta"></span></div>
+        <div class="sum">${s.summary}</div>
+        <div class="btns"><button class="po">▶ 原始</button><button class="pc">▶ 剪後</button><button class="st">■ 停</button></div>
+        <details open><summary>逐字稿</summary><div class="tx"></div></details>`;
+      const sec = {id: s.id, a: s.a, b: s.b, w0: wi, meta: d.querySelector('.meta')};
+      const tx = d.querySelector('.tx');
+      for (const ln of s.lines) {
+        const p = document.createElement('div'); p.className = 'line';
+        p.innerHTML = `<span class="ts">[${fmt(ln.t)}]</span> <span class="sp">${ln.sp}：</span>`;
+        for (let k = 0; k < ln.n; k++, wi++) {
+          const e = document.createElement('span'); e.textContent = D.words[wi][0]; const i = wi;
+          e.onclick = () => clickWord(i, sec); p.appendChild(e); W.push(e);
+        }
+        tx.appendChild(p);
+      }
+      sec.w1 = wi; SECS.push(sec);
+      d.querySelector('.po').onclick = () => playOrig(s.a, s.b, s.id + ' 原始', sec);
+      d.querySelector('.pc').onclick = () => playCut(s.a, s.b, s.id + ' 剪後', sec);
+      d.querySelector('.st').onclick = stop;
+      main.appendChild(d);
+    }
+  }
+  apply(D.state, false);
+  if (location.hash) { const t = document.querySelector(location.hash); t && t.scrollIntoView(); }
+}
+load().catch(e => { main.textContent = '載入失敗：' + e.message; });
+</script></body></html>
