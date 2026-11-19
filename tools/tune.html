@@ -142,7 +142,14 @@ function buildCut(cut, n) {
     let s1 = A.slice(Math.max(A.start, cur.a - PRE), cur.a), s2 = B.slice(cur.b, Math.min(B.end, cur.b + PRE)), out, map;
     if (mode === 'before') { out = s1; map = t => [A, cur.a - s1.length / SR + t]; }
     else if (mode === 'after') { out = s2; map = t => [B, cur.b + t]; }
-    else if (mode === 'orig') { out = A.slice(Math.max(A.start, cur.a - PRE), A.end); const st = Math.max(A.start, cur.a - PRE); map = t => [A, st + t]; }
+    else if (mode === 'orig') {  // 沒剪的樣子：上面那段接著下面那段；剪掉的範圍太長、兩個面板中間沒載入的部分用 0.3 秒空白帶過
+      const st = Math.max(A.start, cur.a - PRE), bs = Math.max(B.start, A.end), gap = bs > A.end + 1e-3 ? Math.round(0.3 * SR) : 0;
+      const p1 = A.slice(st, A.end), p2 = B.slice(bs, Math.min(B.end, cur.b + PRE));
+      out = new Float32Array(p1.length + gap + p2.length);
+      out.set(p1); out.set(p2, p1.length + gap);
+      const l1 = p1.length / SR, lg = gap / SR;
+      map = t => t < l1 + lg ? [A, Math.min(st + t, A.end)] : [B, bs + (t - l1 - lg)];
+    }
     else {  // 和 render_preview.render 同一個交叉淡化
       const n = Math.min(f, s1.length, s2.length);
       out = new Float32Array(s1.length + s2.length - n);
