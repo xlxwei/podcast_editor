@@ -148,7 +148,8 @@ class TuneHandler(RangeHandler):
             if any(blk["a"] < r["from"] and r["to"] < blk["b"] for blk in blocks):
                 o, lo = join(r["from"])
                 out.append(dict(id=f"r{i}", kind="remove", a=r["from"], b=r["to"], fade=r.get("fade", rp.XFADE),
-                                note=r.get("note", ""), out=o, lo=lo, hi=after(r["to"])))
+                                note=r.get("note", ""), out=o, lo=lo, hi=after(r["to"]),
+                                new="init" in r and not r.get("heard")))
         for i in range(1, len(blocks)):
             p, n = blocks[i - 1], blocks[i]
             o, lo = join(p["b"])
@@ -156,6 +157,9 @@ class TuneHandler(RangeHandler):
                             note=f"區塊接點 {rp.mmss(p['b'])} ‖ {rp.mmss(n['a'])}：…{ep.context(p['b'], True)} ‖ {ep.context(n['a'], False)}…",
                             out=o, lo=lo, hi=after(n["a"])))
         out.sort(key=lambda c: c["out"])
+        for n, c in enumerate(out, 1):
+            c["n"] = n               # 編號照播出順序，不因為排到前面而變
+        out.sort(key=lambda c: not c.get("new"))   # 還沒輸出過的新刀排最前面
         tracks = rp.config.load(self.ep_dir)["tracks"]
         return dict(cuts=out, default_fade=rp.XFADE, episode=self.ep_dir.name,
                     tracks=[dict(speaker=t["speaker"], gain=10 ** (t["gain_db"] / 20)) for t in tracks])
@@ -207,6 +211,12 @@ class TuneHandler(RangeHandler):
                     log += r.stdout[-400:] + r.stderr[-800:]
                     if r.returncode:
                         return self._json({"error": log}, 500)
+                with SAVE_LOCK:      # 按了重新輸出就當這一輪的新刀都聽過，之後照時間排
+                    edl = self._edl()
+                    for item in edl["remove"]:
+                        if "init" in item:
+                            item["heard"] = True
+                    (self.ep_dir / "edl.json").write_text(json.dumps(edl, ensure_ascii=False, indent=1))
                 self.commit("微調頁重新輸出試聽版")
                 self._json({"ok": True, "log": log.strip().splitlines()[-3:]})
             else:
