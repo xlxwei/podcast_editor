@@ -203,6 +203,13 @@ class TuneHandler(RangeHandler):
                         rv.keep(body.get("first"), body.get("last"), body.get("remove"))
                     self.commit("逐字稿頁：" + msg)
                 self._json({"ok": True, "state": state})
+            elif self.path == "/api/drop":   # 微調頁「不剪了」：和逐字稿頁的整刀留著是同一件事
+                if body["id"][0] != "r":
+                    raise ValueError("區塊接點不能放棄，請在 session 裡說")
+                with SAVE_LOCK:
+                    msg, _ = self.review().keep(remove=int(body["id"][1:]))
+                    self.commit("微調頁：" + msg)
+                self._json({"ok": True, "msg": msg})
             elif self.path == "/api/render":
                 py = sys.executable
                 log = ""

@@ -15,6 +15,7 @@ button{font-size:14px;cursor:pointer;padding:3px 9px}
 .head b{min-width:44px}.head .t{min-width:52px;color:var(--dim);font-variant-numeric:tabular-nums}
 .head .note{flex:1}.state{font-size:13px;color:var(--ok);white-space:nowrap}.state.dirty{color:var(--edge)}
 .new{font-size:12px;color:var(--bg);background:var(--edge);border-radius:3px;padding:0 5px}
+.drop{margin-left:auto;color:var(--edge)}
 .body{padding:8px 0 4px}
 .lab{font-size:13px;color:var(--dim);margin:6px 0 2px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .lab strong{color:var(--fg);font-variant-numeric:tabular-nums}
@@ -136,6 +137,14 @@ function buildCut(cut, n) {
   const setB = t => { cur.b = Math.max(Math.min(t, Math.min(B.end - 0.3, cut.hi - 0.05)), Math.max(B.start + 0.02, cut.kind === 'remove' ? cur.a + 0.02 : B.start)); refresh(); };
   const nudges = set => [-50, -10, 10, 50].map(ms => $('button', {textContent: (ms > 0 ? '+' : '−') + Math.abs(ms), title: `${ms} 毫秒`, onclick: () => set(ms / 1000)}));
 
+  async function drop(ev) {   // app 內建瀏覽器會擋掉 confirm()，所以用按兩次來確認
+    const others = [...document.querySelectorAll('.state.dirty')].filter(el => el !== state).length;
+    if (others) return msg(`還有 ${others} 刀改了沒儲存，先儲存或還原再按「不剪了」（清單會重新載入）`);
+    if (!ev.target.dataset.armed) { ev.target.dataset.armed = 1; ev.target.textContent = '確定不剪？再按一次'; setTimeout(() => { delete ev.target.dataset.armed; ev.target.textContent = '不剪了'; }, 4000); return; }
+    try { const r = await api('/api/drop', {id: cut.id}); const y = scrollY; await load(); scrollTo(0, y); msg(r.msg + '。後悔的話到逐字稿頁重新圈'); }
+    catch (e) { msg('失敗：' + e.message); }
+  }
+
   function play(mode) {
     stopPlay();
     const f = Math.round(cur.fade * SR);
@@ -189,7 +198,8 @@ function buildCut(cut, n) {
       B.canvas,
       $('div', {className: 'ctl'}, $('button', {textContent: '▶ 試聽剪後', onclick: () => play('cut')}), $('button', {textContent: '▶ 原始', onclick: () => play('orig')}),
         $('button', {textContent: '■', onclick: stopPlay}), '　淡化', fadeIn, '毫秒　', save,
-        $('button', {textContent: '還原', onclick: () => { Object.assign(cur, saved); fadeIn.value = Math.round(cur.fade * 1000); refresh(); }}), info));
+        $('button', {textContent: '還原', onclick: () => { Object.assign(cur, saved); fadeIn.value = Math.round(cur.fade * 1000); refresh(); }}), info,
+        cut.kind === 'remove' ? $('button', {textContent: '不剪了', className: 'drop', onclick: drop}) : ''));
     refresh();
     try { await Promise.all([A.load(), B.load()]); refresh(); } catch (e) { state.textContent = '載入失敗：' + e.message; state.classList.add('dirty'); }
   }
